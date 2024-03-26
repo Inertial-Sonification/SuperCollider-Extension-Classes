@@ -29,10 +29,12 @@ SonicMoveXsensData
 {
 	//4*3
 	// acceleration * 3, totAcc, trig, gyro * 3, totRotation, mag * 3, orientation * 3
-	var <acceleration, <accelerationMagnitude, <jerk, <accTrig, <angularVelocity, <angularVelocityMagnitude, <magneticOrientation, <euler, <angleHistory, <quaternion;
+	var <acceleration, <accelerationMagnitude, <jerk, <accTrig, <angularVelocity, <angularVelocityMagnitude, <magneticOrientation, <euler, <angleHistory, <quaternion, energy, accIntegration;
 	var idx, <fftAngles, fftSize, cosTable;
 	var <quadrant, <base, >scaleQuadrant;
 	var busVals;
+	var <buffer,idxBuf,<mfcc, <mfccResults, <arrMFCC;
+
 	*new {
 		|
 		accelerationIn 				= #[0,0,0] ,
@@ -44,7 +46,9 @@ SonicMoveXsensData
 		eulerIn 					= #[0,0,0],
 		quaternionIn 				= #[0,0,0,0],
 		classificationBase			= 2,
-		jerkIn         				= #[0,0,0] //not used for new usually
+		jerkIn         				= #[0,0,0], //not used for new usually
+		energy						= 0.0,
+		accIntegration				= 0.0
 
 
 		|
@@ -70,14 +74,22 @@ SonicMoveXsensData
 		fftAngles = [0,0,0]!32;
 		fftSize = 32;
 		cosTable = Signal.fftCosTable(fftSize);
+		energy=0.0;
+		accIntegration = 0.0;
+		// euler++jerk++acceleration++angularVelocity++quaternion++quadrant++energy
+		busVals = Bus.control(Server.local, 18);
 
-		busVals = Bus.control(Server.local, 12);
-
+		arrMFCC= ((0!1024)!18);
+		buffer = Buffer.alloc(Server.local, 1024,1);
+		//mfcc = {Buffer(Server.local)}!18;
+		//mfccResults= {Buffer.alloc(Server.local, 13, 1)}!16;
+		idxBuf=0;
 	}
+
 
 	update{ | accelerationIn, accelerationMagnitudeIn, accTrigIn, angularVelocityIn, angularVelocityMagnitudeIn, magneticOrientationIn, eulerIn, quaternionIn, calcFFT = false |
 		var tempQuad;
-
+		var tempData;
 		jerk = accelerationIn - acceleration;
 		acceleration=accelerationIn;
 		accelerationMagnitude = accelerationMagnitudeIn;
@@ -92,7 +104,28 @@ SonicMoveXsensData
 		tempQuad=( base *(tempQuad.abs)).asInteger.clip(0,base-1);
 		quadrant=( tempQuad[0]) + ((base.pow(1)) * tempQuad[1]) + ((base.pow(2)) * tempQuad[2]);
 
-		busVals.setn(euler++ jerk++acceleration++angularVelocity );
+		accIntegration =  (acceleration.pow(2).reduce('+').sqrt) + ( 0.997 * accIntegration );
+
+		energy = accIntegration + (angularVelocity.pow(2).reduce('+'));
+
+		tempData = euler++ jerk++acceleration++angularVelocity++quaternion++quadrant++energy;
+		busVals.setn( tempData );
+
+		tempData.collect({|item,i| arrMFCC[i][idxBuf] = tempData[i]; });
+
+		buffer.set(idxBuf, [acceleration++angularVelocity++quaternion].flat.reduce('+')/10.0 );
+
+		//buffer.do({|buf,i| buf.set(idxBuf, tempData[i])  });
+
+
+
+		//mfcc.collect({|buf,i|
+		//FluidBufMFCC.processBlocking(Server.local, buffer[i], (idxBuf+1)&1023, startCoeff:1, features:buf);
+		//});
+
+		idxBuf = (idxBuf+1)&1023;
+
+
 
 
 		if(calcFFT,{
@@ -141,7 +174,11 @@ SonicMoveXsensData
 
 		^busVals
 	}
+	getBuf
+	{
 
+		^buffer
+	}
 }
 
 SonicMoveXsensCorrelations
@@ -327,13 +364,21 @@ SonicMoveXsensFFT
 	updateBus
 	{
 		statsBus ?? {statsBus= Bus.control(Server.local, stats.flat.size);};
-		if((statsBus.numChannels==stats.flat.size)&&(statsBus!=nil),{statsBus.setn(stats.flat)});
+		if((statsBus.numChannels==stats.flat.size)&&(statsBus!=nil),{statsBus.setn(stats.flat)},
+			{
+				statsBus.free;
+				statsBus= Bus.control(Server.local, stats.flat.size);
+				statsBus.setn(stats.flat);
+
+
+		});
 
 	}
 	getBus
 	{
 		^statsBus;
 	}
+
 
 	getFFTDancerAllSensors{
 		|nDancer|
@@ -367,5 +412,6 @@ SonicMoveXsensFFT
 		^stats[nDancerIdx][nSensorIdx];
 
 	}
+
 
 }
